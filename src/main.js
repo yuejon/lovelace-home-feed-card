@@ -1179,7 +1179,9 @@ class HomeFeedCard extends LitElement {
 		this.oldStates = this._hass != null ? this._hass.states : {};
 		this._hass = hass;
 		this.hass_version = hass.config.version;
-		this._language = Object.keys(hass.resources)[0];
+		this._language =
+		  hass.language ||
+		  (hass.resources ? Object.keys(hass.resources)[0] : "en");
     	if(this.moment && this.haveHistoryEntitiesChanged()){
     		setTimeout(() => {
     			this.refreshEntityHistory().then(() => {
