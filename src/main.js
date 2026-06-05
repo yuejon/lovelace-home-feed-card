@@ -1185,7 +1185,8 @@ class HomeFeedCard extends LitElement {
 		this.hass_version = hass.config.version;
 		this._language =
 		  hass.language ||
-		  (hass.resources && typeof hass.resources === "object"
+		  (hass.resources != null &&
+		   typeof hass.resources === "object"
 		    ? Object.keys(hass.resources)[0]
 		    : "en");
     	if(this.moment && this.haveHistoryEntitiesChanged()){
