@@ -382,26 +382,30 @@ class HomeFeedCard extends LitElement {
 	 	return data.filter(entity => entity != null);
 	}
   
-  applyTemplate(item, template, translateToJinja = false){
-  	var result = template;
-  	
-  	// If the item is just a string (e.g. Todoist calendar as a multi-item entity) convert to an object with a key of "value"
-  	
-  	if(typeof item === "string") item = {value: item};
-  	
-  	Object.keys(item).forEach(p => {
-  		result = result.replace("{{" + p + "}}", translateToJinja ? "{{ config.item." + p + " }}" : item[p]);
-  	});
-  	
-  	if(item.attributes)
-  	{
-  		Object.keys(item.attributes).forEach(p => {
-  			result = result.replace("{{" + p + "}}", item.attributes[p]);
-  		});
-  	}
-  	
-  	return result;
-  }
+	applyTemplate(item, template, translateToJinja = false) {
+	  if (!item) return template;
+	
+	  let result = template;
+	
+	  if (typeof item === "string") {
+	    item = { value: item };
+	  }
+	
+	  Object.keys(item).forEach((p) => {
+	    result = result.replace(
+	      "{{" + p + "}}",
+	      translateToJinja ? "{{ config.item." + p + " }}" : item[p]
+	    );
+	  });
+	
+	  if (item.attributes) {
+	    Object.keys(item.attributes).forEach((p) => {
+	      result = result.replace("{{" + p + "}}", item.attributes[p]);
+	    });
+	  }
+	
+	  return result;
+	}
   
   getMultiItemEntities() {
   		let data = this.entities.filter(i => i.multiple_items === true && i.list_attribute && i.content_template).map(i =>{
@@ -1181,7 +1185,9 @@ class HomeFeedCard extends LitElement {
 		this.hass_version = hass.config.version;
 		this._language =
 		  hass.language ||
-		  (hass.resources ? Object.keys(hass.resources)[0] : "en");
+		  (hass.resources && typeof hass.resources === "object"
+		    ? Object.keys(hass.resources)[0]
+		    : "en");
     	if(this.moment && this.haveHistoryEntitiesChanged()){
     		setTimeout(() => {
     			this.refreshEntityHistory().then(() => {
