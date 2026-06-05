@@ -1180,28 +1180,34 @@ class HomeFeedCard extends LitElement {
     }
     
 	set hass(hass) {
-	  if (!hass) return;
-	  this.oldStates = this._hass?.states || {};
-	  this._hass = hass;
-	  this.hass_version = hass?.config?.version || "0.0.0";
-	  this._language =
-	    hass.language ||
-	    (hass.resources && typeof hass.resources === "object" && !Array.isArray(hass.resources)
-	      ? Object.keys(hass.resources || {})[0] || "en"
-	      : "en");
-	  if (this.moment && this.haveHistoryEntitiesChanged()) {
-	    setTimeout(() => {
-	      this.refreshEntityHistory().then(() => {
-	        this.buildIfReady();
-	      });
-	    }, 2000);
-	  }
-	  if (this.shadowRoot) {
-	    this.shadowRoot.querySelectorAll("ha-card .header-footer > *").forEach((element) => {
-	      element.hass = hass;
-	    });
-	  }
-	  this.buildIfReady();
+		if (!hass) return;
+		this.oldStates = this._hass?.states || {};
+		this._hass = hass;
+		this.hass_version = hass?.config?.version || "0.0.0";
+		this._language =
+		  hass?.language ||
+		  (
+			hass?.resources &&
+			typeof hass.resources === "object" &&
+			Object.keys(hass.resources).length > 0
+			  ? Object.keys(hass.resources)[0]
+			  : "en"
+		  );
+		if (this.moment && this.haveHistoryEntitiesChanged()) {
+			setTimeout(() => {
+			  this.refreshEntityHistory().then(() => {
+				this.buildIfReady();
+			  });
+			}, 2000);
+		}
+		if (this.shadowRoot) {
+			this.shadowRoot
+				.querySelectorAll("ha-card .header-footer > *")
+				.forEach((element) => {
+				  element.hass = hass;
+				});
+		}
+		this.buildIfReady();
 	}
   	
   	getCardSize() {
