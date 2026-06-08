@@ -28,6 +28,8 @@ class HomeFeedCard extends LitElement {
 		this.browser_language = window.navigator.userLanguage || window.navigator.language;
 		if(this.browser_language == "hy") this.browser_language = "hy-am"; // "hy" (Armenian) wrongly maps to zh-tw (Taiwan Chinese)
 		this.moment.locale(this.browser_language);
+		this._buildDebounceTimer = null;
+		this._lastRelevantStateKeys = new Set();
 		this.preloadElementsIfNeeded();
   	}
   	
@@ -50,6 +52,11 @@ class HomeFeedCard extends LitElement {
   		if (this._unsubNotifications) {
   			this._unsubNotifications();
   			this._unsubNotifications = undefined;
+    	}
+    	
+    	if (this._buildDebounceTimer) {
+    		clearTimeout(this._buildDebounceTimer);
+    		this._buildDebounceTimer = null;
     	}
     	
   		super.disconnectedCallback();
@@ -382,30 +389,26 @@ class HomeFeedCard extends LitElement {
 	 	return data.filter(entity => entity != null);
 	}
   
-	applyTemplate(item, template, translateToJinja = false) {
-	  if (!item) return template;
-	
-	  let result = template;
-	
-	  if (typeof item === "string") {
-	    item = { value: item };
-	  }
-	
-	  Object.keys(item).forEach((p) => {
-	    result = result.replace(
-	      "{{" + p + "}}",
-	      translateToJinja ? "{{ config.item." + p + " }}" : item[p]
-	    );
-	  });
-	
-	  if (item.attributes) {
-	    Object.keys(item.attributes).forEach((p) => {
-	      result = result.replace("{{" + p + "}}", item.attributes[p]);
-	    });
-	  }
-	
-	  return result;
-	}
+  applyTemplate(item, template, translateToJinja = false){
+  	var result = template;
+  	
+  	// If the item is just a string (e.g. Todoist calendar as a multi-item entity) convert to an object with a key of "value"
+  	
+  	if(typeof item === "string") item = {value: item};
+  	
+  	Object.keys(item).forEach(p => {
+  		result = result.replace("{{" + p + "}}", translateToJinja ? "{{ config.item." + p + " }}" : item[p]);
+  	});
+  	
+  	if(item.attributes)
+  	{
+  		Object.keys(item.attributes).forEach(p => {
+  			result = result.replace("{{" + p + "}}", item.attributes[p]);
+  		});
+  	}
+  	
+  	return result;
+  }
   
   getMultiItemEntities() {
   		let data = this.entities.filter(i => i.multiple_items === true && i.list_attribute && i.content_template).map(i =>{
@@ -516,27 +519,43 @@ class HomeFeedCard extends LitElement {
 	this.buildIfReady();
   }
   
+  
   eventTime(eventTime)
    {
-		return ((eventTime.date) ? eventTime.date : (eventTime.dateTime) ? eventTime.dateTime : eventTime);   	
+		// Handle both old format (with .date or .dateTime properties) and new WebSocket format (direct string)
+		if(typeof eventTime === 'object') {
+			return ((eventTime.date) ? eventTime.date : (eventTime.dateTime) ? eventTime.dateTime : eventTime);
+		}
+		return eventTime;
    }
    
    eventAllDay(event){
    		var allDay = false;
-   		if(event.start.date){
-				allDay = true;
-		}
-		else if(event.start.dateTime){
-			allDay = false;	
-		}
-		else{
-			let start = this.moment(event.start);
-			let end = this.moment(event.end);
-			let diffInHours = end.diff(start, 'hours');
-			allDay = (diffInHours >= 24);
-		}
-		
-		return allDay;
+   		// Handle both old format and new WebSocket format
+   		let startObj = event.start;
+   		if(typeof startObj === 'object') {
+   			// Old format
+   			if(startObj.date){
+   				allDay = true;
+   			}
+   			else if(startObj.dateTime){
+   				allDay = false;	
+   			}
+   			else{
+   				let start = this.moment(startObj);
+   				let end = this.moment(event.end);
+   				let diffInHours = end.diff(start, 'hours');
+   				allDay = (diffInHours >= 24);
+   			}
+   		} else {
+   			// New WebSocket format - determine if it's all day based on the timestamp format
+   			// All day events will have dates like "2026-05-06" without time
+   			let startStr = String(startObj);
+   			let endStr = String(event.end);
+   			// Check if it looks like a date-only format (YYYY-MM-DD)
+   			allDay = /^\d{4}-\d{2}-\d{2}$/.test(startStr) && /^\d{4}-\d{2}-\d{2}$/.test(endStr);
+   		}
+   		return allDay;
    }
    
   async getEvents() {
@@ -545,19 +564,79 @@ class HomeFeedCard extends LitElement {
 	if(!lastUpdate || (this.moment && this.moment().diff(lastUpdate, 'minutes') > 15)) {
 		let calendarDaysBack = (typeof this._config.calendar_days_back !== 'undefined' ? this._config.calendar_days_back : 0);
 		let calendarDaysForward = (typeof this._config.calendar_days_forward !== 'undefined' ? this._config.calendar_days_forward : 1);
-		const start = this.moment().startOf('day').add(-calendarDaysBack, 'days').utc().format("YYYY-MM-DDTHH:mm:ss");
-		const end = this.moment().startOf('day').add(calendarDaysForward + 1, 'days').utc().format("YYYY-MM-DDTHH:mm:ss");
+		// Use ISO 8601 format with timezone for Home Assistant API
+		const start = this.moment().startOf('day').add(-calendarDaysBack, 'days').toISOString();
+		const end = this.moment().startOf('day').add(calendarDaysForward + 1, 'days').toISOString();
 		try{
 			var calendars = await Promise.all(
         	this.calendars.map(
-          		async calendar => {
-          			let url = `calendars/${calendar}?start=${start}Z&end=${end}Z`;
-          			let result = await this._hass.callApi('get', url);
-          			return result.map(x => { return {...x, calendar: calendar} });
+          		(calendar) => {
+          			// Return a Promise directly
+          			return new Promise((resolve) => {
+          				try {
+          					// Use WebSocket API for calendar events with subscription
+          					// subscribeMessage returns an unsubscribe function
+          					let receivedData = false;
+          					
+							let unsubscribe = null;
+							unsubscribe = this._hass.connection.subscribeMessage(
+								(message) => {
+									if (!receivedData) {
+										receivedData = true;
+										// Schedule unsubscribe on next tick to ensure unsubscribe variable is assigned
+										setTimeout(() => {
+											try {
+												if (typeof unsubscribe === 'function') unsubscribe();
+											} catch (e) {
+												console.warn('Error calling unsubscribe:', e);
+											}
+										}, 0);
+
+										// Parse the message to extract events
+										// The WebSocket subscription returns {events: [...]}
+										if (message && message.events && Array.isArray(message.events)) {
+											const events = message.events.map(x => { return {...x, calendar: calendar} });
+											resolve(events);
+										} else if (message && message.event && message.event.events && Array.isArray(message.event.events)) {
+											const events = message.event.events.map(x => { return {...x, calendar: calendar} });
+											resolve(events);
+										} else if (Array.isArray(message)) {
+											const events = message.map(x => { return {...x, calendar: calendar} });
+											resolve(events);
+										} else {
+											console.warn(`Unexpected message format for ${calendar}:`, message);
+											resolve([]);
+										}
+									}
+								},
+          						{
+          							type: 'calendar/event/subscribe',
+          							entity_id: calendar,
+          							start: start,
+          							end: end
+          						}
+          					);
+          					
+          					// Timeout after 10 seconds
+          					setTimeout(() => {
+          						if (!receivedData) {
+          							receivedData = true;
+          							if (unsubscribe) {
+          								unsubscribe();
+          							}
+          							console.warn(`Timeout for calendar ${calendar}`);
+          							resolve([]);
+          						}
+          					}, 10000);
+          				} catch (wsError) {
+          					console.error(`Error subscribing to calendar ${calendar}:`, wsError?.message || wsError);
+          					resolve([]);
+          				}
+          			});
           		  }));
         }
         catch(e){
-        	console.error("Error getting calendar events");
+        	console.error("Error getting calendar events:", e?.message || e);
         	var calendars = [];
         }
         
@@ -1179,36 +1258,36 @@ class HomeFeedCard extends LitElement {
         this._buildFeed();
     }
     
-	set hass(hass) {
+  	set hass(hass) {
 		if (!hass) return;
-		this.oldStates = this._hass?.states || {};
+		
+		this.oldStates = this._hass != null ? this._hass.states : {};
 		this._hass = hass;
-		this.hass_version = hass?.config?.version || "0.0.0";
-		this._language =
-		  hass?.language ||
-		  (
-			hass?.resources &&
-			typeof hass.resources === "object" &&
-			Object.keys(hass.resources).length > 0
-			  ? Object.keys(hass.resources)[0]
-			  : "en"
-		  );
-		if (this.moment && this.haveHistoryEntitiesChanged()) {
-			setTimeout(() => {
-			  this.refreshEntityHistory().then(() => {
-				this.buildIfReady();
-			  });
-			}, 2000);
-		}
-		if (this.shadowRoot) {
-			this.shadowRoot
-				.querySelectorAll("ha-card .header-footer > *")
-				.forEach((element) => {
-				  element.hass = hass;
-				});
-		}
-		this.buildIfReady();
-	}
+		this.hass_version = hass.config ? hass.config.version : null;
+		this._language = hass.resources ? Object.keys(hass.resources)[0] : null;
+    	if(this.moment && this.haveHistoryEntitiesChanged()){
+    		setTimeout(() => {
+    			this.refreshEntityHistory().then(() => {
+    				this.buildIfReady();
+    			});
+    		}, 2000);
+    	}
+    	
+    	this.shadowRoot.querySelectorAll("ha-card .header-footer > *").forEach(
+      		(element) => {
+        		element.hass = hass;
+      		}
+    	);
+    	
+    	// Debounce the buildIfReady call to prevent excessive rebuilds
+    	if (this._buildDebounceTimer) {
+    		clearTimeout(this._buildDebounceTimer);
+    	}
+    	this._buildDebounceTimer = setTimeout(() => {
+    		this.buildIfReady();
+    		this._buildDebounceTimer = null;
+    	}, 250);
+  	}
   	
   	getCardSize() {
   		if (!this._config || !this.feedContent) {
